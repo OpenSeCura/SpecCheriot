@@ -1,0 +1,106 @@
+(*
+ * Copyright 2026 Google LLC
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     https://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ *)
+
+(* ===========================================================================
+ * The specification with the instruction-by-instruction ALU (simpleSpec)
+ * ===========================================================================
+ * [simpleSpec] is [spec] (cheriot/Spec.v) with the ALU of [specStep] replaced by [specAlu] (Alu.v).
+ * [specStepWith alu] is the body of [specStep] with the ALU as a parameter, so that
+ * [specStepWith wrappedAlu] is [specStep] itself (Proof/SpecEq.v). *)
+
+From Stdlib Require Import String List ZArith.
+From Guru Require Import Primitives Library Syntax Combinators Notations Semantics Composition.
+From Cheriot Require Import SpecDefines Decoder FunctionalUnits Alu SpecFetchDeferred SpecDevice Clint
+  SpecRevoker Plic Spec.
+From SpecCheriot Require Import Alu.
+
+Set Implicit Arguments.
+Unset Strict Implicit.
+Set Asymmetric Patterns.
+
+Import ListNotations.
+Local Open Scope Z_scope.
+Local Open Scope guru_scope.
+
+Section Spec.
+  Variable pcAddrInit : Z.
+  Variable config : RevConfig.
+  Variable regions : list MemRegion.
+  Variable clint : @ClintInstance regions.
+  Variable rev : @RevokerInstance [] regions.
+  Variable plic : @PlicInstance (S (S (length (collectIrqActions regions)))) regions.
+  Local Abbreviation sysTree := (specSysTree pcAddrInit regions).
+  Local Abbreviation np_core := (np_core pcAddrInit regions).
+  Local Abbreviation np_rf := (np_rf pcAddrInit regions).
+  Local Abbreviation np_mem := (np_mem pcAddrInit regions).
+  Local Abbreviation specFetch := (specFetch pcAddrInit).
+  Local Abbreviation specExecuteDeferred := (specExecuteDeferred pcAddrInit).
+  Local Abbreviation regRead := (regRead pcAddrInit).
+  Local Abbreviation executeNonDeferred := (executeNonDeferred pcAddrInit).
+
+  Section Ty.
+    Variable ty : Kind -> Type.
+
+    (* [specStep] with the ALU as a parameter *)
+    Definition specStepWith (alu : ty FullECapWithTag -> ty AluInInstGroup -> LetExpr ty AluOutUnion)
+      : Action ty sysTree (Bit 0) :=
+      LetA fenceIWait : Bool <- liftAction np_mem (specMemReadFenceIWait regions) ;
+      LetA secondLine : Option SecondLine <- liftAction np_core (readSecondLine pcAddrInit regions ty) ;
+      If (And [ Not #fenceIWait ; Not (##secondLine`"valid") ]) Then (
+        LetA meip : Bool <- liftAction np_mem (plicMeipSystem plic ty) ;
+        LetA mtip : Bool <- liftAction np_mem (readClintMtipAction clint ty) ;
+        LetA fetchOut : FetchOut <- liftAction np_core (specFetch regions ty) ;
+        LetL regReadIn : RegReadIn <- wrappedDecode fetchOut ;
+        LetA aluInInstGroup : AluInInstGroup <- liftAction np_rf (regRead regReadIn) ;
+        LetA pcc    : FullECapWithTag <- liftAction np_rf (readRegsList (gprPathsWithKind pcAddrInit) ($0 : Expr ty (Bit RegIdxSzReal))) ;
+        LetL aluOut : AluOutUnion     <- alu pcc aluInInstGroup ;
+        LetA execOut : ExecuteOut <- liftAction np_rf (executeNonDeferred pcc meip mtip aluOut) ;
+        Act (liftAction np_rf (writeRegsList (gprPathsWithKind pcAddrInit) ($0 : Expr ty (Bit RegIdxSzReal)) (##execOut`"nextPcc"))) ;
+        Let  dstIdx     : Bit RegIdxSzReal     <- ##aluOut`"dstIdx" ;
+        Let  dstValue   : FullECapWithTag      <- ##aluOut`"dstValue" ;
+        Let  addr       : Addr                 <- ##dstValue`"addr" ;
+        Let  dataMemOpt : Option MemFenceUnion <- ##execOut`"dataMem" ;
+        Let  mulDivOpt  : Option MulDivUnion   <- ##execOut`"mulDiv" ;
+        Act (liftAction np_core (specExecuteDeferred config regions dstIdx addr dataMemOpt mulDivOpt)) ;
+        Retv
+      ) ;
+      Retv.
+
+    (* The core step with the instruction-by-instruction ALU *)
+    Definition simpleSpecStep : Action ty sysTree (Bit 0) := specStepWith (@specAlu ty).
+  End Ty.
+
+  Definition simpleSpec : Mod sysTree :=
+    fun ty =>
+      (
+        [ Retv ; specRevokerStep pcAddrInit config rev ty ]
+        ++ specPlicPendingsSteps pcAddrInit plic ty
+        ++ [
+          specPlicClaimStep pcAddrInit plic ty ;
+          specPlicSampleMeipStep pcAddrInit plic ty ;
+          specTickCycle pcAddrInit regions ty ;
+          specTickTimer pcAddrInit clint ty ;
+          specSampleMtipStep pcAddrInit clint ty ;
+          simpleSpecStep ty ;
+          specSecondLine pcAddrInit config regions ty
+        ]
+        ++ specFenceIAckSteps pcAddrInit regions ty
+      )%list.
+
+  Lemma specStepWith_wrappedAlu : forall ty, specStepWith (@wrappedAlu ty) = specStep pcAddrInit config clint plic ty.
+  Proof. reflexivity. Qed.
+
+End Spec.
