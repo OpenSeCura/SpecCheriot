@@ -27,6 +27,17 @@ Makefile.coq.*
 .Makefile.coq.*
 .coqdeps.d
 
+# Haskell build artifacts
+*.hi
+*.o
+*.a
+
+# Generated RTL & Simulation files
+Compile.hs
+Rtl
+*.sv
+sim_obj_dir
+
 # Editor backup files
 *~
 .*.sw?

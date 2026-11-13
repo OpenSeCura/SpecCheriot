@@ -13,10 +13,17 @@
 # limitations under the License.
 
 
-# Only the Rocq proofs; the Cheriot and Guru proofs are built first.
-.PHONY: all coq force clean
+# The Rocq proofs, and Verilator simulators of simpleSpec (SimpleSim/) and nondetSpec (NondetSim/).
+# The simulators reuse cheriot's testbench (SimTb.sv, TbCommon.sv) and run_all_tests.sh.
+.PHONY: all coq rtl_bin simrtl simrtlexe force clean
 
 .DEFAULT_GOAL = all
+
+CURR_DIR = $(shell pwd)
+SIMS = SimpleSim NondetSim
+SIM_TARGETS = $(foreach d,$(SIMS),$(CURR_DIR)/$(d)/)
+
+include ../Guru/Gallina.mk
 
 Makefile.coq.all: force
 	$(COQBIN)rocq makefile --no-rocq-package-warning -docroot SpecCheriot -f _CoqProject -o Makefile.coq.all
@@ -27,8 +34,21 @@ coq: Makefile.coq.all
 
 all: coq
 
+rtl_bin: coq
+	$(MAKE) -C ../Guru TARGETS="$(SIM_TARGETS)" $(foreach d,$(SIMS),$(CURR_DIR)/$(d)/Rtl)
+
+simrtl: rtl_bin
+	$(MAKE) -C ../Guru TARGETS="$(SIM_TARGETS)" simrtl
+
+# SimTb.sv includes SimRtl.sv: a copy next to each SimRtl.sv picks up the right one
+simrtlexe: simrtl
+	$(foreach d,$(SIMS),cp ../cheriot/SimTb.sv $(d)/SimTb.sv && \
+	  $(call gallina_lib,$(CURR_DIR)/$(d)/,$(d)/SimRtl.sv) && \
+	  verilator -Wno-CMPCONST --top Tb --binary -I../Guru/Verilog -I$(d) -I../cheriot --Mdir $(d)/sim_obj_dir $(d)/SimTb.sv $(call gallina_args,$(CURR_DIR)/$(d)/,$(d)/SimRtl.sv) && ) true
+
 force:
 
 clean:: Makefile.coq.all
 	$(MAKE) -f Makefile.coq.all clean
 	rm -f Makefile.coq.all Makefile.coq.all.conf .Makefile.coq.all.d
+	rm -rf $(foreach d,$(SIMS),$(d)/sim_obj_dir $(d)/Compile.* $(d)/Rtl $(d)/*.hi $(d)/*.o $(d)/*.sv $(d)/libgallina.a)

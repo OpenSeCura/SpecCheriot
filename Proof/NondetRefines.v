@@ -1,0 +1,125 @@
+(*
+ * Copyright 2026 Google LLC
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     https://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ *)
+
+(* ===========================================================================
+ * pipelinedMod refines nondetSpec
+ * ===========================================================================
+ * Main result:
+ *   - [pipelinedMod_refines_nondetSpec]: [pipelinedMod_refines_simpleSpec] (Refines.v) with
+ *     [nondetSpec] (arbitrary values in the don't-care fields) in place of [simpleSpec], by
+ *     transitivity: every run of [simpleSpec] is a run of [nondetSpec] (NondetEq.v). The software
+ *     rule is stated on [nondetSpec] runs. *)
+
+From Stdlib Require Import String List ZArith Zmod Lia Bool.
+From Guru Require Import Primitives Library Syntax Combinators Notations Semantics Composition Theorems HelperLemmas.
+From Cheriot Require Import SpecDefines Spec SpecDevice Clint Plic SpecRevoker.
+From Cheriot Require Import Impl ImplCommon ImplDevice ImplRevoker ImplMulDiv ImplInst.
+From Cheriot.Proof Require Import StateRel ImplSpec Refinement SimDevices RefRel RefCoreRel RefRevBitRule RefRedirect RefTop.
+From SpecCheriot Require Import Spec NondetSpec.
+From SpecCheriot.Proof Require Import SpecEq Refines NondetEq.
+
+Unset Implicit Arguments.
+Unset Strict Implicit.
+
+Import ListNotations.
+Local Open Scope Z_scope.
+Local Open Scope guru_scope.
+
+Section NondetTop.
+  Variable pcAddrInit : Z.
+  Variable issueWidth : nat.
+  Variable fetchCapacity instCapacity decodeCapacity dataMemCapacity : nat.
+  Variable mulCapacity divCapacity mulStages divStages : nat.
+  Variable mulDivMode : MulDivMode.
+  Variable bp : WithInstPredIfc.
+  Variable config : RevConfig.
+  Variables pre post : list MemRegion.
+  Variable revBase : Z.
+  Variable revPfB : Is_true ((0 <=? revBase) && (revBase + RevokerSizeBytes <=? Z.shiftl 1 AddrSz))%Z.
+  Variable revPfA : Is_true (revBase mod (2 ^ LgLineBytes) =? 0)%Z.
+
+  Local Abbreviation specRegions := (specRegionsOf pre post revBase revPfB revPfA).
+  Local Abbreviation implRegions := (implRegionsOf pre post revBase revPfB revPfA).
+  Local Abbreviation revSpec := (revSpecOf pre post revBase revPfB revPfA).
+  Local Abbreviation rev := (revImplOf pre post revBase revPfB revPfA).
+
+  Variable clintS : @ClintInstance specRegions.
+  Variable clint : @ClintInstance implRegions.
+  Variable plicS : @PlicInstance (S (S (length (collectIrqActions specRegions)))) specRegions.
+  Variable plic : @PlicInstance (S (S (length (collectIrqActions implRegions)))) implRegions.
+
+  Hypothesis Hdisj : Is_true (pairwiseDisjoint specRegions).
+  Hypothesis HrevTab : Is_true (revTableInExternalMem config specRegions).
+  Hypothesis HclintIdx : clintIdx clint = clintIdx clintS.
+  Hypothesis HplicIdx : plicIdx plic = plicIdx plicS.
+  Hypothesis Hmd : Is_true (mulDivStagesDivideXlen mulStages divStages).
+  Hypothesis HdetPre : Forall (fun r => allTreeInitDet (memRegionTree r) = true) pre.
+  Hypothesis HdetPost : Forall (fun r => allTreeInitDet (memRegionTree r) = true) post.
+  Hypothesis HpcEven : pcAligned (Zmod.of_Z _ pcAddrInit).
+
+  Local Abbreviation sTree := (SpecTree pcAddrInit specRegions).
+  Local Abbreviation simpleSpecMod := (@simpleSpec pcAddrInit config specRegions clintS revSpec plicS).
+  Local Abbreviation nondetSpecMod := (@nondetSpec pcAddrInit config specRegions clintS revSpec plicS).
+  Local Abbreviation pipeMod :=
+    (@pipelinedMod pcAddrInit issueWidth fetchCapacity instCapacity decodeCapacity
+       dataMemCapacity mulCapacity divCapacity mulStages divStages mulDivMode bp
+       config implRegions clint rev plic).
+  Local Abbreviation implEnvL initLine fwc :=
+    (implEnv pcAddrInit fetchCapacity instCapacity decodeCapacity dataMemCapacity
+             mulCapacity divCapacity mulStages divStages mulDivMode bp config implRegions initLine fwc).
+  Local Abbreviation specEnvL initLine fwc := (specEnv pcAddrInit specRegions initLine fwc).
+  Local Abbreviation SRuleL initLine :=
+    (SpecRevBitRule pcAddrInit config pre post revBase revPfB revPfA initLine).
+  Local Abbreviation RelL initLine fwc :=
+    (RefRelR pcAddrInit fetchCapacity instCapacity decodeCapacity dataMemCapacity
+            mulCapacity divCapacity mulStages divStages mulDivMode bp config pre post revBase revPfB revPfA
+            clintS clint plicS plic initLine fwc).
+
+  (* The software rule of RefTop.v, on runs of nondetSpec *)
+  Definition NondetSoftwareRevBitsRule initLine fwc (old2 : TreeState ElemState sTree) : Prop :=
+    forall s2 s2' a,
+      SemActions (specEnvL initLine fwc) (nondetSpecMod type) old2 s2 ->
+      In a (nondetSpecMod type) ->
+      SemAction (specEnvL initLine fwc) a s2 s2' Zmod.zero ->
+      SRuleL initLine s2 s2'.
+
+  Lemma nondet_rule_transfer : forall initLine fwc old2,
+    NondetSoftwareRevBitsRule initLine fwc old2 ->
+    SpecSoftwareRevBitsRule pcAddrInit config pre post revBase revPfB revPfA clintS plicS initLine fwc old2.
+  Proof.
+    intros initLine fwc old2 H s2 s2' a Hrun Hin Ha.
+    pose proof (nondet_SemActions_simpleSpec_nondetSpec _ _ _ _ _ _ _ _ _ Hrun) as Hrun'.
+    destruct (nondet_in_simpleSpec _ _ _ _ _ _ a Hin) as [<- | Hin'].
+    - exact (H s2 s2' _ Hrun' (nondet_nondetSpecStep_in _ _ _ _ _ _) (nondet_SemAction_step _ _ _ _ _ _ _ _ _ Ha)).
+    - exact (H s2 s2' a Hrun' Hin' Ha).
+  Qed.
+
+  Theorem pipelinedMod_refines_nondetSpec :
+    forall initLine fwc old1 new1,
+      SemMod (implEnvL initLine fwc) pipeMod old1 new1 ->
+      forall old2, InitStateConsistent sTree old2 ->
+      NondetSoftwareRevBitsRule initLine fwc old2 ->
+      exists fwc' new2, SemMod (specEnvL initLine fwc') nondetSpecMod old2 new2 /\ RelL initLine fwc new1 new2.
+  Proof.
+    intros initLine fwc old1 new1 Hsem old2 Hinit2 Hrule.
+    destruct (pipelinedMod_refines_simpleSpec pcAddrInit issueWidth fetchCapacity instCapacity decodeCapacity
+                dataMemCapacity mulCapacity divCapacity mulStages divStages mulDivMode bp config pre post
+                revBase revPfB revPfA clintS clint plicS plic Hdisj HrevTab HclintIdx HplicIdx Hmd HdetPre
+                HdetPost HpcEven initLine fwc old1 new1 Hsem old2 Hinit2 (nondet_rule_transfer _ _ _ Hrule))
+      as [fwc' [new2 [Hspec Hrel]]].
+    exists fwc', new2. split; [exact (nondet_SemMod_simpleSpec_nondetSpec _ _ _ _ _ _ _ _ _ Hspec) | exact Hrel].
+  Qed.
+End NondetTop.

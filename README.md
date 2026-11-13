@@ -34,6 +34,10 @@ directly; the shared adders and comparators are written out per instruction.
   original `spec` and `simpleSpec` have the same runs.
 - `pipelinedMod_refines_simpleSpec` (`Proof/Refines.v`): the pipelined implementation refines
   `simpleSpec`.
+- `nondet_SemMod_simpleSpec_nondetSpec` (`Proof/NondetEq.v`): every run of `simpleSpec` is a run
+  of `nondetSpec`, which takes arbitrary values in the don't-care fields.
+- `pipelinedMod_refines_nondetSpec` (`Proof/NondetRefines.v`): the pipelined implementation
+  refines `nondetSpec`, by transitivity.
 
 `Print Assumptions pipelinedMod_refines_simpleSpec` shows only Guru's flags (`evalExpr`
 guarded; `FullFormat` and `Expr` positive). There is no `Admitted` and no `Axiom`.
@@ -53,6 +57,11 @@ guarded; `FullFormat` and `Expr` positive). There is no `Admitted` and no `Axiom
 | `Proof/AluEq.v` | `specAlu_eq_wrappedAlu` |
 | `Proof/SpecEq.v` | `spec` and `simpleSpec` have the same runs |
 | `Proof/Refines.v` | `pipelinedMod_refines_simpleSpec` |
+| `NondetAlu.v` | `FreeVals` (the don't-care values) and `nondetAlu`: the arms of `specAlu`, with the don't-care fields taken from `FreeVals` |
+| `NondetSpec.v` | `nondetSpec`: `simpleSpec` with a core step that draws `FreeVals` with `NonDet` (`Random`) before the ALU |
+| `Proof/NondetEq.v` | `nondetAlu` with the datapath's leftover values is `specAlu`; `simpleSpec` runs are `nondetSpec` runs |
+| `Proof/NondetRefines.v` | `pipelinedMod_refines_nondetSpec` |
+| `SimpleSim/SimpleInst.v`, `NondetSim/NondetInst.v` | `simpleSpec` and `nondetSpec` on the concrete system of `cheriot/SpecInst.v`, extracted for simulation |
 
 ## Don't-care values
 
@@ -63,9 +72,10 @@ leaves in fields that are never read:
 - `NewPcc.ecap` of Branch, Cjal and Mret, and Mret's `NewPcc` address and tag and `interruptStatus`;
 - `SpecialValue.tag` and `SpecialValue.ecap` of Csr.
 
-Replacing them with arbitrary values would need a proof that `executeNonDeferred` and the
-deferred commit ignore these fields. A natural way: a further spec with nondeterministic
-values, related to `simpleSpec` by run inclusion.
+`nondetSpec` takes arbitrary values (`NonDet`) for these fields instead. Every `simpleSpec` run is
+a `nondetSpec` run, so the refinement carries over. The converse (the fields really are never
+read: every `nondetSpec` run ends like the matching `simpleSpec` run) is not proved; the
+simulator of `nondetSpec` (random values in these fields) checks it on the test suite.
 
 ## Build
 
@@ -79,6 +89,17 @@ or, when `../cheriot` is already built:
 make Makefile.coq.all
 make -j16 -f Makefile.coq.all
 ```
+
+Simulators of `simpleSpec` and `nondetSpec` (needs `../cheriot` built):
+
+```
+make simrtlexe
+cd ../cheriot && ./run_all_tests.sh ../SpecCheriot/SimpleSim/sim_obj_dir/VTb
+cd ../cheriot && ./run_all_tests.sh ../SpecCheriot/NondetSim/sim_obj_dir/VTb
+```
+
+On the test suite (51 tests), both simulators pass everything, with the same cycle counts as
+cheriot's spec simulator (test-suite: 7218435 cycles; "All tests finished in 6846144 cycles").
 
 With `-j16` the proofs here take about 45 s wall time (about 275 s CPU); the largest `Qed` is
 about 1.4 s.
