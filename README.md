@@ -113,3 +113,13 @@ class bits. No bit-vector reasoning is needed beyond `or 0 x = x` and the adder 
 
 Each class lemma still spends about 0.9 s removing the multiplexer arms of the other classes.
 A one-time syntactic transform of `Or` of `ITE` arms into nested `ITE` would remove this cost.
+
+## Use of AI
+
+AI was used to generate the spec, starting from the atomic, handwritten spec in
+https://github.com/OpenSeCura/cheriot, whose ALU is closer to that of the implementation. The AI
+was given an explicit directive to keep nondeterministic values in unused fields (`nondetAlu`),
+and a clear template for generating the spec and for reusing single-purpose functions such as
+`Bounds` from that repository. The resulting `nondetAlu` and `specAlu` specs were thoroughly
+reviewed by humans. As described above, `specAlu` is proved equivalent to the atomic, handwritten
+spec, and every run of `simpleSpec` is a run of `nondetSpec`. These proofs were also written by AI.
