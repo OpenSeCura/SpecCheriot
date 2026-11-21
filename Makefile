@@ -40,11 +40,20 @@ rtl_bin: coq
 simrtl: rtl_bin
 	$(MAKE) -C ../Guru TARGETS="$(SIM_TARGETS)" simrtl
 
-# SimTb.sv includes SimRtl.sv: a copy next to each SimRtl.sv picks up the right one
-simrtlexe: simrtl
-	$(foreach d,$(SIMS),cp ../cheriot/SimTb.sv $(d)/SimTb.sv && \
-	  $(call gallina_lib,$(CURR_DIR)/$(d)/,$(d)/SimRtl.sv) && \
-	  verilator -Wno-CMPCONST --top Tb --binary -I../Guru/Verilog -I$(d) -I../cheriot --Mdir $(d)/sim_obj_dir $(d)/SimTb.sv $(call gallina_args,$(CURR_DIR)/$(d)/,$(d)/SimRtl.sv) && ) true
+# SimTb.sv includes SimRtl.sv: a copy next to each SimRtl.sv picks up the right one.
+# One rule per simulator, so that each command (in particular gallina_lib, which is
+# "@true" without Gallina calls and "cd ... && ghc ..." with them) is a recipe line of its own.
+# $(1) = simulator directory
+define Simrtlexe_rule
+$(1)/sim_obj_dir/VTb: simrtl
+	cp ../cheriot/SimTb.sv $(1)/SimTb.sv
+	$$(call gallina_lib,$(CURR_DIR)/$(1)/,$(1)/SimRtl.sv)
+	verilator -Wno-CMPCONST --top Tb --binary -I../Guru/Verilog -I$(1) -I../cheriot --Mdir $(1)/sim_obj_dir $(1)/SimTb.sv $$(call gallina_args,$(CURR_DIR)/$(1)/,$(1)/SimRtl.sv)
+endef
+
+$(foreach d,$(SIMS),$(eval $(call Simrtlexe_rule,$(d))))
+
+simrtlexe: $(foreach d,$(SIMS),$(d)/sim_obj_dir/VTb)
 
 force:
 
